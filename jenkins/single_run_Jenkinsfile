@@ -1,0 +1,87 @@
+pipeline {
+        agent any
+        parameters {
+        string(name: 'TagName', defaultValue: '@smoke', description: 'Multiple Tag--> @success_login or @login_with_invalid_phone_no or @login_with_null_phone_no , Single Tag--> @smoke')
+    }
+    stages {
+        stage('Send Slack Notification'){
+            steps{
+                script{
+                    slackSend(
+                        channel: "test-result",
+                        color: "#7aabcc",
+                        message:":information_source: iOS ${TagName} job has been started. => (<${env.JENKINS_URL}job/${env.JOB_BASE_NAME}/${env.BUILD_NUMBER}|Build Link>)"
+                )
+           }
+        }
+    }
+        stage('Checkout') {
+            steps {
+                checkout([$class: 'GitSCM',
+                            branches: [[name: "main"]],
+                            doGenerateSubmoduleConfigurations: false,
+                            extensions: [],
+                            gitTool: 'default',
+                            submoduleCfg: [],
+                            userRemoteConfigs: [[credentialsId:'user-credential',url: 'https://github.com/kloia/dubai-digitalai-2023-event-demo.git']]
+                        ])
+            }
+        }
+        stage('Running Test'){
+            steps {
+                sh """
+                    bundle install
+                    bundle exec cucumber --tag ${TagName}  --format AllureCucumber::CucumberFormatter --out output/allure-results
+                   """
+            }
+        }
+        }
+    post {
+        always {
+            allure([
+                includeProperties: false,
+                jdk: '',
+                properties: [],
+                reportBuildPolicy: 'ALWAYS',
+                report: 'allure-report',
+                results: [[path: 'output/allure-results']]
+            ])
+            script {
+               BUILD_DATA = sh(returnStdout: true, script: "echo \$(cat < $WORKSPACE/allure-report/history/history-trend.json | jq -r '.[] | select(.buildOrder==$BUILD_NUMBER)' )")
+               TOTAL_SCENARIO = sh(returnStdout: true, script: "echo \$(echo '$BUILD_DATA' | jq -r .data.total)")
+               TOTAL_PASSED = sh(returnStdout: true, script: "echo \$(echo '$BUILD_DATA' | jq -r .data.passed)")
+               TOTAL_FAILED = sh(returnStdout: true, script: "echo \$(($TOTAL_SCENARIO - $TOTAL_PASSED))")
+               SUCCESS_RATE = sh(returnStdout: true, script: "echo \$(( (($TOTAL_PASSED * 100) / $TOTAL_SCENARIO) + ( ($TOTAL_PASSED * 100) % $TOTAL_SCENARIO > 0 ) ))")
+               }
+        }
+        success{
+            script{
+                echo "${env.BUILD_URL}job/allure"
+                slackSend(
+                        channel: "test-result",
+                        color: "#70FD01",
+                        iconEmoji: 'jenkins',
+                        message:":white_check_mark: *(<${env.JOB_URL}${BUILD_NUMBER}/allure|iOS Test Automation Report>)*\n\n *Results*: %${SUCCESS_RATE} | *Total*: ${TOTAL_SCENARIO} | *Passed*: ${TOTAL_PASSED} | *Failed*: ${TOTAL_FAILED}\n\n *Tags:* ${TagName} | *Env:* ${params.Environment}"
+                )
+           }
+        }
+        failure{
+            script{
+                slackSend(
+                    channel: "test-result",
+                    color: "#FF0000",
+                    message:":bangbang: *(<${env.JOB_URL}${BUILD_NUMBER}/allure|iOS Test Automation Report>)*\n\n *Results*: %${SUCCESS_RATE} | *Total*: ${TOTAL_SCENARIO} | *Passed*: ${TOTAL_PASSED} | *Failed*: ${TOTAL_FAILED}\n\n *Tags:* ${TagName} | *Env:* ${params.Environment}"
+                )
+           }
+        }
+        aborted{
+            script{
+                slackSend(
+                    channel: "test-result",
+                    color: "#BCBCBC",
+                    message:":interrobang: iOS ${TagName} tag/s has been aborted => (<${env.JOB_URL}${env.BUILD_NUMBER}|Build Link>)"
+                )
+            }
+        }
+    }
+}
